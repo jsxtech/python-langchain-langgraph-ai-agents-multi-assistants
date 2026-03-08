@@ -1,6 +1,6 @@
 # Python LangChain LangGraph AI Agents
 
-Multi-agent systems with RAG, tools, memory, and handoffs.
+Multi-agent systems with RAG, tools, memory, and handoffs. Features enterprise-grade multi-team orchestration with 9 specialized agents across Development, Research, Quality, and Management teams.
 
 ## Setup
 
