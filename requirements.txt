@@ -1,0 +1,7 @@
+langchain
+langchain-openai
+langgraph
+langchain-community
+requests
+faiss-cpu
+numpy
