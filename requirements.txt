@@ -1,7 +1,8 @@
-langchain
-langchain-openai
-langgraph
-langchain-community
-requests
-faiss-cpu
-numpy
+langchain==0.3.25
+langchain-openai==0.3.12
+langgraph==0.4.1
+langchain-community==0.3.24
+requests==2.32.3
+faiss-cpu==1.11.0
+numpy==2.2.6
+python-dotenv==1.1.0
