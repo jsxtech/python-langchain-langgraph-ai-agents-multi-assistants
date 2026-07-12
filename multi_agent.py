@@ -6,9 +6,11 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import ToolNode
 from langchain_core.tools import tool
+from dotenv import load_dotenv
 from typing import TypedDict, Annotated
 import operator
-import ast
+
+load_dotenv()
 
 class AgentState(TypedDict):
     messages: Annotated[list, operator.add]
@@ -46,9 +48,10 @@ def search_knowledge(query: str) -> str:
 def calculate(expression: str) -> str:
     """Calculate a mathematical expression."""
     try:
-        result = ast.literal_eval(expression)
+        allowed_names = {"abs": abs, "round": round, "min": min, "max": max, "pow": pow}
+        result = eval(expression, {"__builtins__": {}}, allowed_names)
         return f"Result: {result}"
-    except (ValueError, SyntaxError) as e:
+    except (SyntaxError, TypeError, ZeroDivisionError, NameError) as e:
         return f"Invalid expression: {str(e)}"
 
 tools = [search_knowledge, calculate]
@@ -62,7 +65,7 @@ def researcher(state: AgentState):
         "messages": [response],
         "agent_history": ["researcher"],
         "needs_review": True,
-        "iteration": 1
+        "iteration": state.get("iteration", 0) + 1
     }
 
 def writer(state: AgentState):
@@ -72,7 +75,7 @@ def writer(state: AgentState):
         "messages": [response],
         "agent_history": ["writer"],
         "needs_review": True,
-        "iteration": 1
+        "iteration": state.get("iteration", 0) + 1
     }
 
 def reviewer(state: AgentState):
@@ -82,13 +85,13 @@ def reviewer(state: AgentState):
         "messages": [response],
         "agent_history": ["reviewer"],
         "needs_review": False,
-        "iteration": 1
+        "iteration": state.get("iteration", 0) + 1
     }
 
 def tool_executor(state: AgentState):
     """Execute tools called by agents"""
-    tool_msg = ToolNode(tools).invoke(state)["messages"][-1]
-    return {"messages": [tool_msg], "agent_history": ["tools"], "iteration": 1}
+    result = ToolNode(tools).invoke(state)
+    return {"messages": result["messages"], "agent_history": ["tools"], "iteration": state.get("iteration", 0) + 1}
 
 def supervisor(state: AgentState):
     """Decides next agent or if task is complete"""
@@ -97,7 +100,7 @@ def supervisor(state: AgentState):
     iteration = state.get("iteration", 0)
     
     # Prevent infinite loops
-    if iteration > 4:
+    if iteration > 8:
         return "end"
     
     # Check if tools need execution
@@ -107,7 +110,9 @@ def supervisor(state: AgentState):
     # Route initial request
     if not history:
         content = last_msg.content.lower()
-        if "research" in content or "find" in content:
+        if "research" in content or "find" in content or "search" in content:
+            return "researcher"
+        elif "calculate" in content or "compute" in content or "math" in content:
             return "researcher"
         elif "review" in content or "critique" in content:
             return "reviewer"
@@ -120,7 +125,12 @@ def supervisor(state: AgentState):
     return "end"
 
 def after_tools(state: AgentState):
-    """Route back to researcher after tool execution"""
+    """Route back to the agent that initiated the tool call"""
+    history = state.get("agent_history", [])
+    # Find the last non-tools agent
+    for agent in reversed(history):
+        if agent != "tools":
+            return agent
     return "researcher"
 
 # Build multi-agent graph with tools and handoffs
@@ -143,6 +153,7 @@ graph.add_conditional_edges("researcher", supervisor, {
 })
 graph.add_conditional_edges("tools", after_tools, {
     "researcher": "researcher",
+    "writer": "writer",
     "reviewer": "reviewer"
 })
 graph.add_conditional_edges("writer", supervisor, {
@@ -155,14 +166,13 @@ memory = MemorySaver()
 app = graph.compile(checkpointer=memory)
 
 if __name__ == "__main__":
-    config = {"configurable": {"thread_id": "1"}}
-    
     tasks = [
         "Research LangGraph features",
         "Calculate 150 * 3 + 50"
     ]
     
-    for task in tasks:
+    for i, task in enumerate(tasks, 1):
+        config = {"configurable": {"thread_id": str(i)}}
         response = app.invoke({
             "messages": [HumanMessage(content=task)],
             "agent_history": [],
