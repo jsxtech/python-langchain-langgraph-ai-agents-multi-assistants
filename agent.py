@@ -6,9 +6,14 @@ from langgraph.graph import StateGraph, MessagesState
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.tools import tool
+from dotenv import load_dotenv
 import requests
-import ast
+import ipaddress
+import socket
+from urllib.parse import urlparse
 from datetime import datetime
+
+load_dotenv()
 
 # RAG knowledge base (lazy initialization)
 vectorstore = None
@@ -37,9 +42,10 @@ def search_knowledge(query: str) -> str:
 def calculate(expression: str) -> str:
     """Calculate a mathematical expression safely."""
     try:
-        result = ast.literal_eval(expression)
+        allowed_names = {"abs": abs, "round": round, "min": min, "max": max, "pow": pow}
+        result = eval(expression, {"__builtins__": {}}, allowed_names)
         return f"Result: {result}"
-    except (ValueError, SyntaxError) as e:
+    except (SyntaxError, TypeError, ZeroDivisionError, NameError) as e:
         return f"Invalid expression: {str(e)}"
 
 @tool
@@ -47,6 +53,17 @@ def fetch_url(url: str) -> str:
     """Fetch content from a URL."""
     if not url.startswith(("http://", "https://")):
         return "Invalid URL: must start with http:// or https://"
+    # SSRF protection: block internal/private networks
+    try:
+        hostname = urlparse(url).hostname
+        if not hostname:
+            return "Invalid URL: no hostname found"
+        ip = socket.gethostbyname(hostname)
+        ip_obj = ipaddress.ip_address(ip)
+        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+            return "Access denied: cannot access private/internal networks"
+    except socket.gaierror:
+        return "Invalid URL: hostname could not be resolved"
     try:
         response = requests.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
         response.raise_for_status()
