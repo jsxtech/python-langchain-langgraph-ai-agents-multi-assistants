@@ -1,14 +1,17 @@
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.tools import tool
 from langgraph.prebuilt import ToolNode
+from dotenv import load_dotenv
 from typing import TypedDict, Annotated
 import operator
-import ast
+import os
+
+load_dotenv()
 
 class State(TypedDict):
     messages: Annotated[list, operator.add]
@@ -37,9 +40,12 @@ def get_vectorstore():
 def execute_code(code: str) -> str:
     """Execute Python code safely (expressions only)."""
     try:
-        result = ast.literal_eval(code)
+        allowed_names = {"abs": abs, "round": round, "min": min, "max": max,
+                        "pow": pow, "len": len, "sum": sum, "sorted": sorted,
+                        "range": range, "list": list, "int": int, "float": float, "str": str}
+        result = eval(code, {"__builtins__": {}}, allowed_names)
         return f"Result: {result}"
-    except (ValueError, SyntaxError) as e:
+    except (SyntaxError, TypeError, ZeroDivisionError, NameError) as e:
         return f"Execution failed: {str(e)}"
 
 @tool
@@ -55,9 +61,13 @@ def search_knowledge(query: str) -> str:
 def save_artifact(name: str, content: str) -> str:
     """Save work artifact."""
     try:
-        with open(f"artifacts/{name}.txt", "w") as f:
+        safe_name = os.path.basename(name)
+        if not safe_name:
+            return "Invalid artifact name"
+        os.makedirs("artifacts", exist_ok=True)
+        with open(f"artifacts/{safe_name}.txt", "w") as f:
             f.write(content)
-        return f"Saved {name}"
+        return f"Saved {safe_name}"
     except Exception as e:
         return f"Save failed: {str(e)}"
 
@@ -76,7 +86,10 @@ def run_tests(test_code: str) -> str:
 def load_artifact(name: str) -> str:
     """Load a saved artifact."""
     try:
-        with open(f"artifacts/{name}.txt", "r") as f:
+        safe_name = os.path.basename(name)
+        if not safe_name:
+            return "Invalid artifact name"
+        with open(f"artifacts/{safe_name}.txt", "r") as f:
             return f.read()
     except FileNotFoundError:
         return f"Artifact {name} not found"
@@ -89,24 +102,24 @@ llm_with_tools = llm.bind_tools(tools)
 def analyst(state: State):
     sys = SystemMessage(content="You are a data analyst. Use search_knowledge for best practices.")
     response = llm_with_tools.invoke([sys] + state["messages"])
-    return {"messages": [response], "next_agent": "coder", "iteration": 1}
+    return {"messages": [response], "next_agent": "coder", "iteration": state.get("iteration", 0) + 1}
 
 def coder(state: State):
     artifacts = state.get("artifacts", {})
     context = f"Previous work: {list(artifacts.keys())}" if artifacts else ""
     sys = SystemMessage(content=f"You are a coder. Write code. Use execute_code and save_artifact. {context}")
     response = llm_with_tools.invoke([sys] + state["messages"])
-    return {"messages": [response], "next_agent": "tester", "iteration": 1}
+    return {"messages": [response], "next_agent": "tester", "iteration": state.get("iteration", 0) + 1}
 
 def tester(state: State):
     sys = SystemMessage(content="You are a tester. Use run_tests and search_knowledge for testing strategies.")
     response = llm_with_tools.invoke([sys] + state["messages"])
-    return {"messages": [response], "next_agent": "reviewer", "iteration": 1}
+    return {"messages": [response], "next_agent": "reviewer", "iteration": state.get("iteration", 0) + 1}
 
 def reviewer(state: State):
     sys = SystemMessage(content="You are a reviewer. Provide final assessment and approval.")
     response = llm.invoke([sys] + state["messages"])
-    return {"messages": [response], "next_agent": "done", "iteration": 1}
+    return {"messages": [response], "next_agent": "done", "iteration": state.get("iteration", 0) + 1}
 
 def tools_node(state: State):
     result = ToolNode(tools).invoke(state)
@@ -119,7 +132,7 @@ def tools_node(state: State):
             if tc["name"] == "save_artifact":
                 artifacts[tc["args"]["name"]] = tc["args"]["content"]
     
-    return {"messages": [result["messages"][-1]], "iteration": 1, "artifacts": artifacts}
+    return {"messages": result["messages"], "iteration": state.get("iteration", 0) + 1, "artifacts": artifacts}
 
 def router(state: State):
     msg = state["messages"][-1]
@@ -138,12 +151,22 @@ def router(state: State):
         return "coder"
     
     next_agent = state.get("next_agent", "done")
-    if next_agent == "done" or state.get("iteration", 0) > 3:
+    if next_agent == "done" or state.get("iteration", 0) > 10:
         return "end"
     return next_agent
 
 def after_tools(state: State):
-    return state.get("next_agent", "coder")
+    # Route back to the agent that called the tool
+    # next_agent points to where to go AFTER the current agent finishes,
+    # so we infer the current agent from next_agent
+    next_agent = state.get("next_agent", "")
+    caller_map = {
+        "coder": "analyst",
+        "tester": "coder",
+        "reviewer": "tester",
+        "done": "reviewer"
+    }
+    return caller_map.get(next_agent, "coder")
 
 graph = StateGraph(State)
 graph.add_node("analyst", analyst)
