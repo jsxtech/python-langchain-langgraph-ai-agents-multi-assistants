@@ -6,8 +6,11 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.tools import tool
 from langgraph.prebuilt import ToolNode
+from dotenv import load_dotenv
 from typing import TypedDict, Annotated
 import operator
+
+load_dotenv()
 
 class State(TypedDict):
     messages: Annotated[list, operator.add]
@@ -57,22 +60,22 @@ llm_with_tools = llm.bind_tools(tools)
 def creative_agent(state: State):
     sys = SystemMessage(content="You are creative. Use search_methods for techniques. Generate innovative ideas.")
     response = llm_with_tools.invoke([sys] + state["messages"])
-    return {"messages": [response], "agent_chain": ["creative"], "iteration": 1}
+    return {"messages": [response], "agent_chain": ["creative"], "iteration": state.get("iteration", 0) + 1}
 
 def analytical_agent(state: State):
     sys = SystemMessage(content="You are analytical. Use validate_idea and search_methods. Evaluate critically.")
     response = llm_with_tools.invoke([sys] + state["messages"])
-    return {"messages": [response], "agent_chain": ["analytical"], "iteration": 1}
+    return {"messages": [response], "agent_chain": ["analytical"], "iteration": state.get("iteration", 0) + 1}
 
 def practical_agent(state: State):
     feedback = state.get("feedback", "")
     sys = SystemMessage(content=f"You are practical. Use create_plan and search_methods. Feedback: {feedback}")
     response = llm_with_tools.invoke([sys] + state["messages"])
-    return {"messages": [response], "agent_chain": ["practical"], "iteration": 1}
+    return {"messages": [response], "agent_chain": ["practical"], "iteration": state.get("iteration", 0) + 1}
 
 def tools_node(state: State):
     result = ToolNode(tools).invoke(state)
-    return {"messages": [result["messages"][-1]], "iteration": 1}
+    return {"messages": result["messages"], "iteration": state.get("iteration", 0) + 1}
 
 def router(state: State):
     msg = state["messages"][-1]
@@ -80,7 +83,7 @@ def router(state: State):
     iteration = state.get("iteration", 0)
     
     # Prevent infinite loops
-    if iteration > 5:
+    if iteration > 12:
         return "end"
     
     # Check for tool calls
